@@ -44,8 +44,11 @@ export default function Portal() {
     const [regPassword, setRegPassword] = useState("");
     const [regDone, setRegDone] = useState(false);
 
-    // once logged in, teacher holds the profile fetched from the backend
-    const [teacher, setTeacher] = useState<TeacherProfile | null>(null);
+    // restore teacher session from sessionStorage on page load so refresh doesn't log them out
+    const [teacher, setTeacher] = useState<TeacherProfile | null>(() => {
+        const saved = sessionStorage.getItem("teacher");
+        return saved ? JSON.parse(saved) : null;
+    });
     const [activeTab, setActiveTab] = useState<"sessions" | "rewards">("sessions");
 
     // sessions tab state
@@ -126,7 +129,9 @@ export default function Portal() {
         }
 
         const profile = await res.json();
-        setTeacher({ ...profile, email });
+        const teacherData = { ...profile, email };
+        sessionStorage.setItem("teacher", JSON.stringify(teacherData));
+        setTeacher(teacherData);
         setLoading(false);
     }
 
@@ -401,6 +406,7 @@ export default function Portal() {
                     <button
                         onClick={async () => {
                             await supabase.auth.signOut();
+                            sessionStorage.removeItem("teacher");
                             setTeacher(null);
                             setEmail("");
                             setPassword("");
