@@ -67,22 +67,49 @@ export default function App()
               </a>
             </div>
 
-            {/* podium for the top 3 — silver, gold, bronze layout with 1st in the middle */}
+            {/* stepped podium — 2nd left, 1st centre (tallest), 3rd right */}
             {leaderboardData.length >= 3 && (
-              <div className="grid grid-cols-3 gap-4">
-                {[
-                  { entry: leaderboardData[1], rank: 2, label: "2nd", ring: "border-slate-400/40", badge: "bg-slate-400/10 text-slate-300", glow: "" },
-                  { entry: leaderboardData[0], rank: 1, label: "1st", ring: "border-yellow-400/40", badge: "bg-yellow-400/10 text-yellow-300", glow: "shadow-[0_0_40px_rgba(250,204,21,0.12)]" },
-                  { entry: leaderboardData[2], rank: 3, label: "3rd", ring: "border-orange-400/40", badge: "bg-orange-400/10 text-orange-300", glow: "" },
-                ].map(({ entry, rank, label, ring, badge, glow }) => (
-                  <div key={rank} className={`flex flex-col items-center rounded-3xl border ${ring} bg-white/5 p-6 text-center ${glow} ${rank === 1 ? "scale-105" : ""}`}>
-                    <span className={`rounded-full px-3 py-1 text-xs font-bold ${badge}`}>{label}</span>
-                    {/* showing the shortened wallet address — names would break anonymity */}
-                    <p className="mt-3 font-mono text-sm font-bold text-white">{shortAddress(entry.wallet_address)}</p>
-                    <p className="mt-1 text-3xl font-black text-white">{entry.balance}</p>
-                    <p className="text-sm text-slate-400">BCU tokens</p>
+              <div className="rounded-3xl border border-cyan-400/10 bg-white/5 p-8 backdrop-blur">
+                <div className="flex items-end justify-center gap-4">
+
+                  {/* 2nd place */}
+                  <div className="flex flex-col items-center gap-3 flex-1">
+                    <div className="text-center">
+                      <p className="font-mono text-sm font-bold text-white">{shortAddress(leaderboardData[1].wallet_address)}</p>
+                      <p className="text-2xl font-black text-slate-300">{leaderboardData[1].balance}</p>
+                      <p className="text-xs text-slate-500">BCU tokens</p>
+                    </div>
+                    <div className="w-full h-28 rounded-t-2xl bg-gradient-to-b from-slate-400/30 to-slate-400/10 border border-slate-400/30 flex items-center justify-center shadow-[0_0_30px_rgba(148,163,184,0.1)]">
+                      <span className="text-4xl font-black text-slate-300">2</span>
+                    </div>
                   </div>
-                ))}
+
+                  {/* 1st place — tallest with trophy */}
+                  <div className="flex flex-col items-center gap-3 flex-1">
+                    <div className="text-4xl">🏆</div>
+                    <div className="text-center">
+                      <p className="font-mono text-sm font-bold text-white">{shortAddress(leaderboardData[0].wallet_address)}</p>
+                      <p className="text-3xl font-black text-yellow-300">{leaderboardData[0].balance}</p>
+                      <p className="text-xs text-slate-500">BCU tokens</p>
+                    </div>
+                    <div className="w-full h-44 rounded-t-2xl bg-gradient-to-b from-yellow-400/30 to-yellow-400/10 border border-yellow-400/40 flex items-center justify-center shadow-[0_0_40px_rgba(250,204,21,0.2)]">
+                      <span className="text-5xl font-black text-yellow-300">1</span>
+                    </div>
+                  </div>
+
+                  {/* 3rd place */}
+                  <div className="flex flex-col items-center gap-3 flex-1">
+                    <div className="text-center">
+                      <p className="font-mono text-sm font-bold text-white">{shortAddress(leaderboardData[2].wallet_address)}</p>
+                      <p className="text-2xl font-black text-orange-300">{leaderboardData[2].balance}</p>
+                      <p className="text-xs text-slate-500">BCU tokens</p>
+                    </div>
+                    <div className="w-full h-20 rounded-t-2xl bg-gradient-to-b from-orange-400/30 to-orange-400/10 border border-orange-400/30 flex items-center justify-center shadow-[0_0_30px_rgba(251,146,60,0.1)]">
+                      <span className="text-4xl font-black text-orange-300">3</span>
+                    </div>
+                  </div>
+
+                </div>
               </div>
             )}
 
