@@ -1,5 +1,5 @@
-// Teacher portal — handles login, registration, session QR generation and academic rewards
-// Only teachers with a BCU email can register and they can only send tokens to students on their course
+// Teacher portal — login, registration, QR sessions, academic rewards and course leaderboard
+// Teachers are scoped to their own course — they can only see and reward their own students
 
 import { useState, useEffect, useRef } from "react";
 import { supabase } from "./supabaseClient";
@@ -7,7 +7,6 @@ import { BCU_COURSES } from "./courses";
 import QRCode from "qrcode";
 import { API } from "./config";
 
-// shapes for the data we get back from the backend
 type TeacherProfile = {
     full_name: string;
     course: string;
@@ -27,58 +26,60 @@ type RewardStatus = {
     message: string;
 };
 
-export default function Portal() {
-    // controls whether we show the login or register form before signing in
-    const [view, setView] = useState<"login" | "register">("login");
+type LeaderboardEntry = {
+    wallet_address: string;
+    balance: string;
+    full_name: string;
+};
 
-    // login form fields
+export default function Portal() {
+    const [view, setView] = useState<"login" | "register">("login");
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
     const [error, setError] = useState("");
     const [loading, setLoading] = useState(false);
 
-    // register form fields — kept separate from login so they don't interfere
     const [regName, setRegName] = useState("");
     const [regEmail, setRegEmail] = useState("");
     const [regCourse, setRegCourse] = useState("");
     const [regPassword, setRegPassword] = useState("");
     const [regDone, setRegDone] = useState(false);
 
-    // restore teacher session from sessionStorage on page load so refresh doesn't log them out
+    // restore session from sessionStorage so page refresh doesn't log the teacher out
     const [teacher, setTeacher] = useState<TeacherProfile | null>(() => {
         const saved = sessionStorage.getItem("teacher");
         return saved ? JSON.parse(saved) : null;
     });
-    const [activeTab, setActiveTab] = useState<"sessions" | "rewards">("sessions");
+    const [activeTab, setActiveTab] = useState<"sessions" | "rewards" | "leaderboard">("sessions");
 
-    // sessions tab state
+    // sessions tab
     const [moduleCode, setModuleCode] = useState("");
     const [qrToken, setQrToken] = useState("");
     const [sessionId, setSessionId] = useState("");
     const [sessionCreated, setSessionCreated] = useState(false);
     const canvasRef = useRef<HTMLCanvasElement>(null);
 
-    // rewards tab state
+    // rewards tab
     const [students, setStudents] = useState<Student[]>([]);
     const [studentsLoading, setStudentsLoading] = useState(false);
-    const [rewardModule, setRewardModule] = useState("");
     const [grades, setGrades] = useState<Record<string, string>>({});
     const [rewardStatus, setRewardStatus] = useState<Record<string, RewardStatus>>({});
     const [sendingFor, setSendingFor] = useState<string | null>(null);
 
-    // redraw the QR code whenever the token changes — using useEffect here because
-    // the inline ref callback approach only fires on mount, not on token updates
+    // leaderboard tab — filtered to just this teacher's course
+    const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
+    const [leaderboardLoading, setLeaderboardLoading] = useState(false);
+
+    // redraw the QR canvas whenever the token rotates
     useEffect(() => {
         if (canvasRef.current && qrToken) {
-            QRCode.toCanvas(canvasRef.current, qrToken, { width: 220 });
+            QRCode.toCanvas(canvasRef.current, qrToken, { width: 240 });
         }
     }, [qrToken]);
 
-    // subscribe to Supabase Realtime on the sessions table so the QR updates
-    // automatically on the teacher's screen whenever a student scans it
+    // subscribe to Supabase Realtime so the QR auto-updates when a student scans
     useEffect(() => {
         if (!sessionId) return;
-
         const channel = supabase
             .channel(`session-${sessionId}`)
             .on("postgres_changes", {
@@ -87,18 +88,15 @@ export default function Portal() {
                 table: "sessions",
                 filter: `session_id=eq.${sessionId}`
             }, (payload) => {
-                // backend rotates the token after each scan — this picks up the new one
                 setQrToken((payload.new as { qr_token: string }).qr_token);
             })
             .subscribe();
-
         return () => { supabase.removeChannel(channel); };
     }, [sessionId]);
 
-    // fetch students when the rewards tab opens — filtered to the teacher's course only
+    // fetch students once when the rewards tab first opens
     useEffect(() => {
         if (activeTab !== "rewards" || !teacher || students.length > 0) return;
-
         setStudentsLoading(true);
         fetch(`${API}/students?course=${encodeURIComponent(teacher.course)}`)
             .then(res => res.json())
@@ -106,23 +104,42 @@ export default function Portal() {
             .catch(() => setStudentsLoading(false));
     }, [activeTab, teacher, students.length]);
 
-    // sign in with Supabase auth then fetch the teacher profile from our teachers table
+    // build the course leaderboard by matching students against the global blockchain leaderboard
+    useEffect(() => {
+        if (activeTab !== "leaderboard" || !teacher || leaderboard.length > 0) return;
+        setLeaderboardLoading(true);
+
+        Promise.all([
+            fetch(`${API}/students?course=${encodeURIComponent(teacher.course)}`).then(r => r.json()),
+            fetch(`${API}/leaderboard`).then(r => r.json())
+        ]).then(([courseStudents, globalBoard]) => {
+            // match each student to their on-chain balance using wallet address
+            const entries: LeaderboardEntry[] = courseStudents
+                .map((s: Student) => {
+                    const entry = globalBoard.find((e: { wallet_address: string }) => e.wallet_address === s.wallet_address);
+                    return {
+                        wallet_address: s.wallet_address,
+                        full_name: s.full_name,
+                        balance: entry ? entry.balance : "0"
+                    };
+                })
+                .sort((a: LeaderboardEntry, b: LeaderboardEntry) => parseInt(b.balance) - parseInt(a.balance));
+            setLeaderboard(entries);
+            setLeaderboardLoading(false);
+        }).catch(() => setLeaderboardLoading(false));
+    }, [activeTab, teacher, leaderboard.length]);
+
     async function handleLogin(e: React.FormEvent) {
         e.preventDefault();
         setError("");
         setLoading(true);
 
         const { error: authError } = await supabase.auth.signInWithPassword({ email, password });
-        if (authError) {
-            setError(authError.message);
-            setLoading(false);
-            return;
-        }
+        if (authError) { setError(authError.message); setLoading(false); return; }
 
-        // check they actually have a teacher profile — students signing in here would have no record
         const res = await fetch(`${API}/teacher-profile?email=${encodeURIComponent(email)}`);
         if (!res.ok) {
-            setError("No teacher profile found for this account. Register first.");
+            setError("No teacher profile found for this account.");
             await supabase.auth.signOut();
             setLoading(false);
             return;
@@ -135,52 +152,29 @@ export default function Portal() {
         setLoading(false);
     }
 
-    // teacher registration — auth is handled client-side via Supabase signUp,
-    // then the backend just inserts the teacher record into our teachers table
     async function handleRegister(e: React.FormEvent) {
         e.preventDefault();
         setError("");
         setLoading(true);
 
-        // create the Supabase auth user first — email confirmation is disabled in the dashboard
-        // so this works immediately without needing to click any link
-        const { error: authError } = await supabase.auth.signUp({
-            email: regEmail,
-            password: regPassword
-        });
+        const { error: authError } = await supabase.auth.signUp({ email: regEmail, password: regPassword });
+        if (authError) { setError(authError.message); setLoading(false); return; }
 
-        if (authError) {
-            setError(authError.message);
-            setLoading(false);
-            return;
-        }
-
-        // now create the teacher profile record on the backend
         const res = await fetch(`${API}/register-teacher`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                email: regEmail,
-                full_name: regName,
-                course: regCourse
-            })
+            body: JSON.stringify({ email: regEmail, full_name: regName, course: regCourse })
         });
 
         const data = await res.json();
-        if (!res.ok) {
-            setError(data.error || "Registration failed");
-            setLoading(false);
-            return;
-        }
+        if (!res.ok) { setError(data.error || "Registration failed"); setLoading(false); return; }
 
         setRegDone(true);
         setLoading(false);
     }
 
-    // create a session row in Supabase and generate the initial QR token
     async function createSession(e: React.FormEvent) {
         e.preventDefault();
-
         const token = crypto.randomUUID().replace(/-/g, "");
 
         const { data, error: sessionError } = await supabase.from("sessions").insert({
@@ -201,69 +195,47 @@ export default function Portal() {
         }
     }
 
-    // send academic performance tokens to a student — grade × 10 = tokens, max 1000
     async function sendReward(student: Student) {
         const grade = parseInt(grades[student.student_id] || "");
-
-        if (!rewardModule.trim()) {
-            setRewardStatus(prev => ({ ...prev, [student.student_id]: { type: "error", message: "Enter a module code first" } }));
-            return;
-        }
         if (!grade || grade < 1 || grade > 100) {
-            setRewardStatus(prev => ({ ...prev, [student.student_id]: { type: "error", message: "Grade must be 1–100" } }));
+            setRewardStatus(prev => ({ ...prev, [student.student_id]: { type: "error", message: "Enter a grade (1–100)" } }));
             return;
         }
 
         setSendingFor(student.student_id);
-        // clear any previous status for this student before sending
         setRewardStatus(prev => { const next = { ...prev }; delete next[student.student_id]; return next; });
 
         try {
             const res = await fetch(`${API}/reward`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    student_id: student.student_id,
-                    module_code: rewardModule.trim().toUpperCase(),
-                    grade,
-                    teacher_email: teacher?.email // backend uses this to verify course access
-                })
+                body: JSON.stringify({ student_id: student.student_id, grade, teacher_email: teacher?.email })
             });
-
             const data = await res.json();
             setRewardStatus(prev => ({
                 ...prev,
-                [student.student_id]: {
-                    type: res.ok ? "success" : "error",
-                    message: data.message || data.error
-                }
+                [student.student_id]: { type: res.ok ? "success" : "error", message: data.message || data.error }
             }));
         } catch {
             setRewardStatus(prev => ({ ...prev, [student.student_id]: { type: "error", message: "Request failed" } }));
         }
-
         setSendingFor(null);
     }
 
-    // ── Not logged in — show login or registration form ───────────────────────
+    // ── Auth screens ──────────────────────────────────────────────────────────
 
     if (!teacher) {
-        // success screen shown after registration completes
         if (view === "register" && regDone) {
             return (
                 <div className="min-h-screen bg-[#050816] flex items-center justify-center px-6">
-                    <div className="w-full max-w-md rounded-3xl border border-cyan-400/10 bg-white/5 p-8 text-center">
+                    <div className="w-full max-w-md rounded-3xl border border-cyan-400/10 bg-white/5 p-8 text-center backdrop-blur">
                         <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-400/10">
                             <span className="text-2xl text-emerald-400">✓</span>
                         </div>
                         <h1 className="text-2xl font-bold text-white">Account created</h1>
-                        <p className="mt-2 text-sm text-slate-400">
-                            You can now sign in to the teacher portal.
-                        </p>
-                        <button
-                            onClick={() => { setView("login"); setError(""); }}
-                            className="mt-6 w-full rounded-xl bg-cyan-400 py-3 font-semibold text-black hover:bg-cyan-300"
-                        >
+                        <p className="mt-2 text-sm text-slate-400">You can now sign in to the teacher portal.</p>
+                        <button onClick={() => { setView("login"); setError(""); }}
+                            className="mt-6 w-full rounded-xl bg-cyan-400 py-3 font-semibold text-black hover:bg-cyan-300 transition">
                             Go to sign in
                         </button>
                     </div>
@@ -274,63 +246,29 @@ export default function Portal() {
         if (view === "register") {
             return (
                 <div className="min-h-screen bg-[#050816] flex items-center justify-center px-6">
-                    <div className="w-full max-w-md rounded-3xl border border-cyan-400/10 bg-white/5 p-8">
-                        <p className="text-sm font-semibold uppercase tracking-[0.2em] text-cyan-300">
-                            Birmingham City University
-                        </p>
+                    <div className="w-full max-w-md rounded-3xl border border-cyan-400/10 bg-white/5 p-8 backdrop-blur">
+                        <p className="text-sm font-semibold uppercase tracking-[0.2em] text-cyan-300">Birmingham City University</p>
                         <h1 className="mt-4 text-3xl font-bold text-white">Teacher registration</h1>
-                        <p className="mt-2 text-sm text-slate-400">
-                            Register with your BCU email. You can only reward students on your own course.
-                        </p>
+                        <p className="mt-2 text-sm text-slate-400">Register with your BCU email. You can only reward students on your own course.</p>
                         <form onSubmit={handleRegister} className="mt-8 flex flex-col gap-4">
-                            <input
-                                type="text"
-                                placeholder="Full name"
-                                value={regName}
-                                onChange={(e) => setRegName(e.target.value)}
-                                required
-                                className="w-full rounded-xl border border-cyan-400/10 bg-white/5 px-4 py-3 text-white placeholder-slate-500 outline-none focus:border-cyan-400/40"
-                            />
-                            <input
-                                type="email"
-                                placeholder="BCU email address"
-                                value={regEmail}
-                                onChange={(e) => setRegEmail(e.target.value)}
-                                required
-                                className="w-full rounded-xl border border-cyan-400/10 bg-white/5 px-4 py-3 text-white placeholder-slate-500 outline-none focus:border-cyan-400/40"
-                            />
-                            <select
-                                value={regCourse}
-                                onChange={(e) => setRegCourse(e.target.value)}
-                                required
-                                className="w-full rounded-xl border border-cyan-400/10 bg-[#0a1020] px-4 py-3 text-white outline-none focus:border-cyan-400/40 appearance-none"
-                            >
+                            <input type="text" placeholder="Full name" value={regName} onChange={e => setRegName(e.target.value)} required
+                                className="w-full rounded-xl border border-cyan-400/10 bg-white/5 px-4 py-3 text-white placeholder-slate-500 outline-none focus:border-cyan-400/40" />
+                            <input type="email" placeholder="BCU email address" value={regEmail} onChange={e => setRegEmail(e.target.value)} required
+                                className="w-full rounded-xl border border-cyan-400/10 bg-white/5 px-4 py-3 text-white placeholder-slate-500 outline-none focus:border-cyan-400/40" />
+                            <select value={regCourse} onChange={e => setRegCourse(e.target.value)} required
+                                className="w-full rounded-xl border border-cyan-400/10 bg-[#0a1020] px-4 py-3 text-white outline-none focus:border-cyan-400/40 appearance-none">
                                 <option value="" disabled>Select your course</option>
-                                {BCU_COURSES.map(c => (
-                                    <option key={c} value={c}>{c}</option>
-                                ))}
+                                {BCU_COURSES.map(c => <option key={c} value={c}>{c}</option>)}
                             </select>
-                            <input
-                                type="password"
-                                placeholder="Password"
-                                value={regPassword}
-                                onChange={(e) => setRegPassword(e.target.value)}
-                                required
-                                className="w-full rounded-xl border border-cyan-400/10 bg-white/5 px-4 py-3 text-white placeholder-slate-500 outline-none focus:border-cyan-400/40"
-                            />
+                            <input type="password" placeholder="Password" value={regPassword} onChange={e => setRegPassword(e.target.value)} required
+                                className="w-full rounded-xl border border-cyan-400/10 bg-white/5 px-4 py-3 text-white placeholder-slate-500 outline-none focus:border-cyan-400/40" />
                             {error && <p className="text-sm text-red-400">{error}</p>}
-                            <button
-                                type="submit"
-                                disabled={loading}
-                                className="w-full rounded-xl bg-cyan-400 py-3 font-semibold text-black transition hover:bg-cyan-300 disabled:opacity-50"
-                            >
+                            <button type="submit" disabled={loading}
+                                className="w-full rounded-xl bg-cyan-400 py-3 font-semibold text-black transition hover:bg-cyan-300 disabled:opacity-50">
                                 {loading ? "Creating account..." : "Create account"}
                             </button>
-                            <p className="text-center text-sm text-slate-500">
-                                Already have an account?{" "}
-                                <button type="button" onClick={() => { setView("login"); setError(""); }} className="text-cyan-300 hover:underline">
-                                    Sign in
-                                </button>
+                            <p className="text-center text-sm text-slate-500">Already have an account?{" "}
+                                <button type="button" onClick={() => { setView("login"); setError(""); }} className="text-cyan-300 hover:underline">Sign in</button>
                             </p>
                         </form>
                     </div>
@@ -338,47 +276,24 @@ export default function Portal() {
             );
         }
 
-        // default login view
         return (
             <div className="min-h-screen bg-[#050816] flex items-center justify-center px-6">
-                <div className="w-full max-w-md rounded-3xl border border-cyan-400/10 bg-white/5 p-8">
-                    <p className="text-sm font-semibold uppercase tracking-[0.2em] text-cyan-300">
-                        Birmingham City University
-                    </p>
+                <div className="w-full max-w-md rounded-3xl border border-cyan-400/10 bg-white/5 p-8 backdrop-blur">
+                    <p className="text-sm font-semibold uppercase tracking-[0.2em] text-cyan-300">Birmingham City University</p>
                     <h1 className="mt-4 text-3xl font-bold text-white">Teacher Portal</h1>
-                    <p className="mt-2 text-sm text-slate-400">
-                        Sign in to create sessions and manage academic rewards
-                    </p>
+                    <p className="mt-2 text-sm text-slate-400">Sign in to create sessions and manage academic rewards</p>
                     <form onSubmit={handleLogin} className="mt-8 flex flex-col gap-4">
-                        <input
-                            type="email"
-                            placeholder="BCU email address"
-                            value={email}
-                            onChange={(e) => setEmail(e.target.value)}
-                            required
-                            className="w-full rounded-xl border border-cyan-400/10 bg-white/5 px-4 py-3 text-white placeholder-slate-500 outline-none focus:border-cyan-400/40"
-                        />
-                        <input
-                            type="password"
-                            placeholder="Password"
-                            value={password}
-                            onChange={(e) => setPassword(e.target.value)}
-                            required
-                            className="w-full rounded-xl border border-cyan-400/10 bg-white/5 px-4 py-3 text-white placeholder-slate-500 outline-none focus:border-cyan-400/40"
-                        />
+                        <input type="email" placeholder="BCU email address" value={email} onChange={e => setEmail(e.target.value)} required
+                            className="w-full rounded-xl border border-cyan-400/10 bg-white/5 px-4 py-3 text-white placeholder-slate-500 outline-none focus:border-cyan-400/40" />
+                        <input type="password" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} required
+                            className="w-full rounded-xl border border-cyan-400/10 bg-white/5 px-4 py-3 text-white placeholder-slate-500 outline-none focus:border-cyan-400/40" />
                         {error && <p className="text-sm text-red-400">{error}</p>}
-                        <button
-                            type="submit"
-                            disabled={loading}
-                            className="w-full rounded-xl bg-cyan-400 py-3 font-semibold text-black transition hover:bg-cyan-300 disabled:opacity-50"
-                        >
+                        <button type="submit" disabled={loading}
+                            className="w-full rounded-xl bg-cyan-400 py-3 font-semibold text-black transition hover:bg-cyan-300 disabled:opacity-50">
                             {loading ? "Signing in..." : "Sign in"}
                         </button>
-                        <p className="text-center text-sm text-slate-500">
-                            New teacher?{" "}
-                            <button type="button" onClick={() => { setView("register"); setError(""); }} className="text-cyan-300 hover:underline">
-                                Register here
-                            </button>
+                        <p className="text-center text-sm text-slate-500">New teacher?{" "}
+                            <button type="button" onClick={() => { setView("register"); setError(""); }} className="text-cyan-300 hover:underline">Register here</button>
                         </p>
                     </form>
                 </div>
@@ -386,87 +301,67 @@ export default function Portal() {
         );
     }
 
-    // ── Logged in — teacher dashboard ─────────────────────────────────────────
+    // ── Dashboard ─────────────────────────────────────────────────────────────
 
     return (
-        <div className="min-h-screen bg-[#050816] px-6 py-14">
-            <div className="mx-auto max-w-4xl">
+        <div className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.1),_transparent_40%),linear-gradient(180deg,_#050816_0%,_#0a1020_100%)] px-6 py-10">
+            <div className="mx-auto max-w-5xl">
 
-                {/* header shows the teacher's name and which course they're assigned to */}
-                <div className="flex items-start justify-between">
+                {/* header */}
+                <div className="flex items-start justify-between mb-8">
                     <div>
-                        <p className="text-sm font-semibold uppercase tracking-[0.2em] text-cyan-300">
-                            Teacher Portal
-                        </p>
-                        <h1 className="mt-2 text-3xl font-bold text-white">{teacher.full_name}</h1>
-                        <div className="mt-1 inline-flex items-center gap-2 rounded-full border border-cyan-400/20 bg-cyan-400/10 px-3 py-1">
+                        <p className="text-xs font-semibold uppercase tracking-[0.25em] text-cyan-400">Teacher Portal</p>
+                        <h1 className="mt-2 text-4xl font-bold text-white">{teacher.full_name}</h1>
+                        <div className="mt-2 inline-flex items-center gap-2 rounded-full border border-cyan-400/20 bg-cyan-400/10 px-4 py-1.5">
+                            <div className="h-1.5 w-1.5 rounded-full bg-cyan-400 shadow-[0_0_6px_rgba(34,211,238,0.8)]" />
                             <span className="text-xs font-semibold text-cyan-300">{teacher.course}</span>
                         </div>
                     </div>
-                    <button
-                        onClick={async () => {
-                            await supabase.auth.signOut();
-                            sessionStorage.removeItem("teacher");
-                            setTeacher(null);
-                            setEmail("");
-                            setPassword("");
-                        }}
-                        className="rounded-xl border border-red-400/10 bg-red-400/5 px-4 py-2 text-sm text-red-400 transition hover:bg-red-400/10"
-                    >
+                    <button onClick={async () => {
+                        await supabase.auth.signOut();
+                        sessionStorage.removeItem("teacher");
+                        setTeacher(null);
+                        setEmail(""); setPassword("");
+                    }} className="rounded-xl border border-red-400/20 bg-red-400/5 px-4 py-2 text-sm text-red-400 transition hover:bg-red-400/10">
                         Sign out
                     </button>
                 </div>
 
-                {/* tab switcher between QR session creation and academic rewards */}
-                <div className="mt-8 flex gap-2 rounded-2xl border border-cyan-400/10 bg-white/5 p-1 w-fit">
-                    <button
-                        onClick={() => setActiveTab("sessions")}
-                        className={`rounded-xl px-5 py-2 text-sm font-semibold transition ${activeTab === "sessions" ? "bg-cyan-400 text-black" : "text-slate-300 hover:text-white"}`}
-                    >
-                        Sessions
-                    </button>
-                    <button
-                        onClick={() => setActiveTab("rewards")}
-                        className={`rounded-xl px-5 py-2 text-sm font-semibold transition ${activeTab === "rewards" ? "bg-cyan-400 text-black" : "text-slate-300 hover:text-white"}`}
-                    >
-                        Academic Rewards
-                    </button>
+                {/* tab bar */}
+                <div className="flex gap-1 rounded-2xl border border-cyan-400/10 bg-white/5 p-1 w-fit mb-8 backdrop-blur">
+                    {(["sessions", "rewards", "leaderboard"] as const).map(tab => (
+                        <button key={tab} onClick={() => setActiveTab(tab)}
+                            className={`rounded-xl px-6 py-2.5 text-sm font-semibold capitalize transition ${activeTab === tab ? "bg-cyan-400 text-black shadow-[0_0_20px_rgba(34,211,238,0.3)]" : "text-slate-400 hover:text-white"}`}>
+                            {tab}
+                        </button>
+                    ))}
                 </div>
 
                 {/* ── Sessions tab ── */}
                 {activeTab === "sessions" && (
-                    <div className="mt-8">
-                        <p className="text-sm text-slate-400">
-                            Generate a QR code for students to scan and earn BCU tokens. The QR refreshes automatically after each scan so it can't be reused.
-                        </p>
+                    <div className="rounded-3xl border border-cyan-400/10 bg-white/5 p-8 backdrop-blur">
+                        <h2 className="text-xl font-bold text-white">Generate Attendance QR</h2>
+                        <p className="mt-1 text-sm text-slate-400">The QR refreshes automatically after each scan — students can't share or reuse it.</p>
+
                         {!sessionCreated ? (
-                            <form onSubmit={createSession} className="mt-6 flex flex-col gap-4 max-w-md">
-                                <input
-                                    type="text"
-                                    placeholder="Module code e.g. CMP6200"
-                                    value={moduleCode}
-                                    onChange={(e) => setModuleCode(e.target.value)}
-                                    required
-                                    className="w-full rounded-xl border border-cyan-400/10 bg-white/5 px-4 py-3 text-white placeholder-slate-500 outline-none focus:border-cyan-400/40"
-                                />
-                                <button
-                                    type="submit"
-                                    className="w-full rounded-xl bg-cyan-400 py-3 font-semibold text-black transition hover:bg-cyan-300"
-                                >
+                            <form onSubmit={createSession} className="mt-6 flex flex-col gap-4 max-w-sm">
+                                <input type="text" placeholder="Module code e.g. CMP6200" value={moduleCode}
+                                    onChange={e => setModuleCode(e.target.value)} required
+                                    className="w-full rounded-xl border border-cyan-400/10 bg-white/5 px-4 py-3 text-white placeholder-slate-500 outline-none focus:border-cyan-400/40" />
+                                <button type="submit"
+                                    className="w-full rounded-xl bg-cyan-400 py-3 font-semibold text-black transition hover:bg-cyan-300 shadow-[0_0_20px_rgba(34,211,238,0.2)]">
                                     Generate QR code
                                 </button>
                             </form>
                         ) : (
                             <div className="mt-8 flex flex-col items-center gap-6">
-                                <div className="rounded-2xl border border-cyan-400/10 bg-white p-6">
+                                <div className="rounded-2xl border border-cyan-400/20 bg-white p-6 shadow-[0_0_40px_rgba(34,211,238,0.15)]">
                                     <canvas ref={canvasRef} />
                                 </div>
-                                <p className="text-sm text-slate-400">Students scan this to earn 10 BCU tokens</p>
+                                <p className="text-sm text-slate-400">Students scan this to earn <span className="font-bold text-cyan-300">10 BCU tokens</span></p>
                                 <p className="font-mono text-xs text-slate-600">Token: {qrToken}</p>
-                                <button
-                                    onClick={() => { setSessionCreated(false); setModuleCode(""); }}
-                                    className="rounded-xl border border-cyan-400/10 bg-white/5 px-6 py-3 text-sm text-cyan-300 transition hover:bg-white/10"
-                                >
+                                <button onClick={() => { setSessionCreated(false); setModuleCode(""); }}
+                                    className="rounded-xl border border-cyan-400/10 bg-white/5 px-6 py-3 text-sm text-cyan-300 transition hover:bg-white/10">
                                     Create another session
                                 </button>
                             </div>
@@ -474,89 +369,63 @@ export default function Portal() {
                     </div>
                 )}
 
-                {/* ── Academic rewards tab ── */}
+                {/* ── Rewards tab ── */}
                 {activeTab === "rewards" && (
-                    <div className="mt-8">
-                        <p className="text-sm text-slate-400">
-                            Showing students enrolled in <span className="font-semibold text-cyan-300">{teacher.course}</span>.
-                            Each student can only receive one academic reward per module — max 1000 tokens.
+                    <div className="rounded-3xl border border-cyan-400/10 bg-white/5 p-8 backdrop-blur">
+                        <h2 className="text-xl font-bold text-white">Academic Rewards</h2>
+                        <p className="mt-1 text-sm text-slate-400">
+                            Showing students in <span className="font-semibold text-cyan-300">{teacher.course}</span>. Grade × 10 = BCU tokens. Max 1000 per student per day.
                         </p>
-
-                        {/* module code applies to the whole batch so the teacher sets it once */}
-                        <div className="mt-4 max-w-sm">
-                            <label className="text-xs font-semibold uppercase tracking-widest text-slate-400">Module code</label>
-                            <input
-                                type="text"
-                                placeholder="e.g. CMP6200"
-                                value={rewardModule}
-                                onChange={(e) => setRewardModule(e.target.value.toUpperCase())}
-                                className="mt-2 w-full rounded-xl border border-cyan-400/10 bg-white/5 px-4 py-3 text-white placeholder-slate-500 outline-none focus:border-cyan-400/40"
-                            />
-                        </div>
 
                         <div className="mt-6 overflow-hidden rounded-2xl border border-cyan-400/10">
                             {studentsLoading ? (
-                                <div className="px-6 py-10 text-center text-sm text-slate-500">Loading students...</div>
+                                <div className="px-6 py-12 text-center text-sm text-slate-500">Loading students...</div>
                             ) : students.length === 0 ? (
-                                <div className="px-6 py-10 text-center text-sm text-slate-500">
+                                <div className="px-6 py-12 text-center text-sm text-slate-500">
                                     No students registered for <span className="text-white">{teacher.course}</span> yet
                                 </div>
                             ) : (
                                 <table className="w-full text-left text-sm">
                                     <thead className="bg-cyan-400/10 text-xs font-semibold uppercase tracking-wider text-slate-400">
                                         <tr>
-                                            <th className="px-4 py-3">Student</th>
-                                            <th className="px-4 py-3 w-32">Grade (%)</th>
-                                            <th className="px-4 py-3 w-32">Tokens</th>
-                                            <th className="px-4 py-3 w-28"></th>
+                                            <th className="px-5 py-4">Student</th>
+                                            <th className="px-5 py-4 w-36">Grade (%)</th>
+                                            <th className="px-5 py-4 w-32">Tokens</th>
+                                            <th className="px-5 py-4 w-28"></th>
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {students.map((student) => {
+                                        {students.map(student => {
                                             const gradeVal = parseInt(grades[student.student_id] || "");
-                                            // show a live preview of how many tokens the grade will award
-                                            const tokenPreview = !isNaN(gradeVal) && gradeVal >= 1 && gradeVal <= 100
-                                                ? gradeVal * 10
-                                                : null;
+                                            const tokenPreview = !isNaN(gradeVal) && gradeVal >= 1 && gradeVal <= 100 ? gradeVal * 10 : null;
                                             const status = rewardStatus[student.student_id];
                                             const isSending = sendingFor === student.student_id;
 
                                             return (
-                                                <tr key={student.student_id} className="border-t border-cyan-400/10 hover:bg-white/5">
-                                                    <td className="px-4 py-3">
-                                                        <p className="font-medium text-white">{student.full_name}</p>
+                                                <tr key={student.student_id} className="border-t border-cyan-400/10 hover:bg-white/5 transition">
+                                                    <td className="px-5 py-4">
+                                                        <p className="font-semibold text-white">{student.full_name}</p>
                                                         <p className="text-xs text-slate-500">{student.email}</p>
                                                     </td>
-                                                    <td className="px-4 py-3">
-                                                        <input
-                                                            type="number"
-                                                            min="1"
-                                                            max="100"
-                                                            placeholder="0–100"
+                                                    <td className="px-5 py-4">
+                                                        <input type="number" min="1" max="100" placeholder="0–100"
                                                             value={grades[student.student_id] || ""}
-                                                            onChange={(e) => setGrades(prev => ({
-                                                                ...prev,
-                                                                [student.student_id]: e.target.value
-                                                            }))}
-                                                            className="w-full rounded-lg border border-cyan-400/10 bg-white/5 px-3 py-2 text-white placeholder-slate-600 outline-none focus:border-cyan-400/40"
-                                                        />
+                                                            onChange={e => setGrades(prev => ({ ...prev, [student.student_id]: e.target.value }))}
+                                                            className="w-full rounded-lg border border-cyan-400/10 bg-white/5 px-3 py-2 text-white placeholder-slate-600 outline-none focus:border-cyan-400/40" />
                                                     </td>
-                                                    <td className="px-4 py-3">
+                                                    <td className="px-5 py-4">
                                                         {tokenPreview !== null
-                                                            ? <span className="font-semibold text-emerald-300">{tokenPreview} BCU</span>
+                                                            ? <span className="font-bold text-emerald-300">{tokenPreview} BCU</span>
                                                             : <span className="text-slate-600">—</span>}
                                                     </td>
-                                                    <td className="px-4 py-3">
+                                                    <td className="px-5 py-4">
                                                         {status ? (
-                                                            <span className={`text-xs font-medium ${status.type === "success" ? "text-emerald-400" : "text-red-400"}`}>
-                                                                {status.type === "success" ? "Sent ✓" : "Error"}
+                                                            <span className={`text-xs font-semibold ${status.type === "success" ? "text-emerald-400" : "text-red-400"}`}>
+                                                                {status.type === "success" ? "Sent ✓" : status.message}
                                                             </span>
                                                         ) : (
-                                                            <button
-                                                                onClick={() => sendReward(student)}
-                                                                disabled={isSending}
-                                                                className="rounded-lg bg-cyan-400 px-4 py-2 text-xs font-semibold text-black transition hover:bg-cyan-300 disabled:opacity-50"
-                                                            >
+                                                            <button onClick={() => sendReward(student)} disabled={isSending}
+                                                                className="rounded-lg bg-cyan-400 px-4 py-2 text-xs font-semibold text-black transition hover:bg-cyan-300 disabled:opacity-50 shadow-[0_0_12px_rgba(34,211,238,0.2)]">
                                                                 {isSending ? "Sending..." : "Send"}
                                                             </button>
                                                         )}
@@ -568,18 +437,74 @@ export default function Portal() {
                                 </table>
                             )}
                         </div>
+                    </div>
+                )}
 
-                        {/* show any error messages below the table so they don't get lost */}
-                        {Object.values(rewardStatus).some(s => s.type === "error") && (
-                            <div className="mt-4 space-y-1">
-                                {students
-                                    .filter(s => rewardStatus[s.student_id]?.type === "error")
-                                    .map(s => (
-                                        <p key={s.student_id} className="text-xs text-red-400">
-                                            {s.full_name}: {rewardStatus[s.student_id].message}
-                                        </p>
-                                    ))}
-                            </div>
+                {/* ── Leaderboard tab ── */}
+                {activeTab === "leaderboard" && (
+                    <div className="rounded-3xl border border-cyan-400/10 bg-white/5 p-8 backdrop-blur">
+                        <h2 className="text-xl font-bold text-white">Course Leaderboard</h2>
+                        <p className="mt-1 text-sm text-slate-400">
+                            Live token rankings for <span className="font-semibold text-cyan-300">{teacher.course}</span> — pulled directly from the blockchain.
+                        </p>
+
+                        {leaderboardLoading ? (
+                            <div className="mt-8 text-center text-sm text-slate-500">Loading leaderboard...</div>
+                        ) : leaderboard.length === 0 ? (
+                            <div className="mt-8 text-center text-sm text-slate-500">No students registered yet</div>
+                        ) : (
+                            <>
+                                {/* top 3 podium */}
+                                {leaderboard.length >= 3 && (
+                                    <div className="mt-8 grid grid-cols-3 gap-4">
+                                        {[
+                                            { entry: leaderboard[1], rank: 2, label: "2nd", ring: "border-slate-400/30", glow: "", badge: "bg-slate-400/10 text-slate-300" },
+                                            { entry: leaderboard[0], rank: 1, label: "1st", ring: "border-yellow-400/40", glow: "shadow-[0_0_40px_rgba(250,204,21,0.15)]", badge: "bg-yellow-400/10 text-yellow-300" },
+                                            { entry: leaderboard[2], rank: 3, label: "3rd", ring: "border-orange-400/30", glow: "", badge: "bg-orange-400/10 text-orange-300" },
+                                        ].map(({ entry, rank, label, ring, glow, badge }) => (
+                                            <div key={rank} className={`flex flex-col items-center rounded-2xl border ${ring} bg-white/5 p-6 text-center ${glow} ${rank === 1 ? "scale-105" : ""} transition`}>
+                                                <span className={`rounded-full px-3 py-1 text-xs font-bold ${badge}`}>{label}</span>
+                                                <p className="mt-3 text-sm font-bold text-white">{entry.full_name}</p>
+                                                <p className="mt-1 text-3xl font-black text-white">{entry.balance}</p>
+                                                <p className="text-xs text-slate-400">BCU tokens</p>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+
+                                {/* full table */}
+                                <div className="mt-6 overflow-hidden rounded-2xl border border-cyan-400/10">
+                                    <table className="w-full text-left text-sm">
+                                        <thead className="bg-cyan-400/10 text-xs font-semibold uppercase tracking-wider text-slate-400">
+                                            <tr>
+                                                <th className="px-5 py-4">Rank</th>
+                                                <th className="px-5 py-4">Student</th>
+                                                <th className="px-5 py-4 text-right">BCU Tokens</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {leaderboard.map((entry, i) => (
+                                                <tr key={i} className={`border-t border-cyan-400/10 hover:bg-white/5 transition ${i === 0 ? "bg-yellow-400/5" : ""}`}>
+                                                    <td className="px-5 py-4">
+                                                        <span className={`inline-flex h-8 w-8 items-center justify-center rounded-full text-xs font-bold
+                                                            ${i === 0 ? "bg-yellow-400/20 text-yellow-300" :
+                                                              i === 1 ? "bg-slate-400/20 text-slate-300" :
+                                                              i === 2 ? "bg-orange-400/20 text-orange-300" :
+                                                              "bg-white/5 text-slate-400"}`}>
+                                                            {i + 1}
+                                                        </span>
+                                                    </td>
+                                                    <td className="px-5 py-4 font-semibold text-white">{entry.full_name}</td>
+                                                    <td className="px-5 py-4 text-right">
+                                                        <span className="font-bold text-emerald-300">{entry.balance}</span>
+                                                        <span className="ml-1 text-xs text-slate-500">BCU</span>
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </>
                         )}
                     </div>
                 )}
