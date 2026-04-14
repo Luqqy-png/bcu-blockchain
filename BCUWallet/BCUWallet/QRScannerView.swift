@@ -38,7 +38,7 @@ struct QRScannerView: UIViewControllerRepresentable {
         // POSTs the scanned token to the backend checkin endpoint
         // the backend looks up the session using just the token — no session_id needed
         func sendToBackend(code: String) {
-            let backendBaseURL = "https://bcu-backend-67y1.onrender.com/checkin"
+            let backendBaseURL = "https://bcu-backend-production.up.railway.app/checkin"
             guard let url = URL(string: backendBaseURL) else {
                 print("Bad URL")
                 return

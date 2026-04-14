@@ -130,7 +130,7 @@ struct LeaderboardView: View {
     // pulls the leaderboard from the local backend
     // backend returns wallet_address and balance, already sorted highest first
     func fetchLeaderboard() {
-        guard let url = URL(string: "https://bcu-backend-67y1.onrender.com/leaderboard") else { return }
+        guard let url = URL(string: "https://bcu-backend-production.up.railway.app/leaderboard") else { return }
 
         URLSession.shared.dataTask(with: url) { data, _, error in
             DispatchQueue.main.async {
