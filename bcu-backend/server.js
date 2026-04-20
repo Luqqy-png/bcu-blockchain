@@ -1,5 +1,5 @@
 // BCU Blockchain backend - Node.js + Express
-// handles check-ins, wallet creation, token rewards, leaderboard and student profiles
+// handles check-ins, wallet creation, token rewards, leaderboard, and student profiles
 // runs on port 3000, connects to Supabase and Sepolia testnet via Alchemy
 
 require("dotenv").config();
