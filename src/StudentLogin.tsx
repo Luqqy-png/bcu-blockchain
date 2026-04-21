@@ -1,12 +1,7 @@
-// student login page — only used in the iOS app flow, not linked from the main website
-// teachers use the Portal page instead (/Portal.tsx)
-// after logging in it shows the student's wallet address and live BCU token balance
-
 import { useState } from "react";
 import { supabase } from "./supabaseClient";
 import { API } from "./config";
 
-// shape of the profile we build up after a successful login
 type StudentProfile = {
     full_name: string;
     email: string;

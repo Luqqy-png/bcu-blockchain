@@ -1,7 +1,3 @@
-// list of all BCU courses available for students and teachers to pick from
-// I pulled these from the BCU website — wanted a proper list rather than making things up
-// used in Register.tsx (student) and Portal.tsx (teacher registration) as a shared dropdown
-
 export const BCU_COURSES = [
     "Accounting and Finance",
     "Architecture",

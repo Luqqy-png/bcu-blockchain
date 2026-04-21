@@ -1,14 +1,8 @@
-// student registration page — only for the iOS app side of the project
-// web teachers use the portal registration instead (/Portal.tsx)
-// this creates a Supabase auth account and then calls the backend to generate a wallet
-
 import { useState } from "react";
 import { supabase } from "./supabaseClient";
 import { BCU_COURSES } from "./courses";
 import { API } from "./config";
 
-// capitalises the first letter of each word as the student types their name
-// didn't want to rely on CSS for this because it affects the actual stored value
 function toTitleCase(str: string) {
     return str
         .toLowerCase()

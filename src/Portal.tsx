@@ -1,6 +1,3 @@
-// Teacher portal — login, registration, QR sessions, academic rewards and course leaderboard
-// Teachers are scoped to their own course — they can only see and reward their own students
-
 import { useState, useEffect, useRef } from "react";
 import { supabase } from "./supabaseClient";
 import { BCU_COURSES } from "./courses";
@@ -293,7 +290,7 @@ export default function Portal() {
                             {loading ? "Signing in..." : "Sign in"}
                         </button>
                         <p className="text-center text-sm text-slate-500">New teacher?{" "}
-                            <button type="button" onClick={() => { setView("register"); setError(""); }} className="text-cyan-300 hover:underline">Register here</button>
+                            <button type="button" onClick={() => { setView("register"); setError(""); setRegDone(false); }} className="text-cyan-300 hover:underline">Register here</button>
                         </p>
                     </form>
                 </div>
@@ -372,10 +369,18 @@ export default function Portal() {
                 {/* ── Rewards tab ── */}
                 {activeTab === "rewards" && (
                     <div className="rounded-3xl border border-cyan-400/10 bg-white/5 p-8 backdrop-blur">
-                        <h2 className="text-xl font-bold text-white">Academic Rewards</h2>
-                        <p className="mt-1 text-sm text-slate-400">
-                            Showing students in <span className="font-semibold text-cyan-300">{teacher.course}</span>. Grade × 10 = BCU tokens. Max 1000 per student per day.
-                        </p>
+                        <div className="flex items-start justify-between">
+                            <div>
+                                <h2 className="text-xl font-bold text-white">Academic Rewards</h2>
+                                <p className="mt-1 text-sm text-slate-400">
+                                    Showing students in <span className="font-semibold text-cyan-300">{teacher.course}</span>. Grade × 10 = BCU tokens. Max 1000 per student per day.
+                                </p>
+                            </div>
+                            <button onClick={() => { setStudents([]); setGrades({}); setRewardStatus({}); }}
+                                className="rounded-lg border border-cyan-400/10 bg-white/5 px-3 py-2 text-xs text-cyan-300 hover:bg-white/10 transition">
+                                ↻ Refresh
+                            </button>
+                        </div>
 
                         <div className="mt-6 overflow-hidden rounded-2xl border border-cyan-400/10">
                             {studentsLoading ? (
@@ -443,10 +448,18 @@ export default function Portal() {
                 {/* ── Leaderboard tab ── */}
                 {activeTab === "leaderboard" && (
                     <div className="rounded-3xl border border-cyan-400/10 bg-white/5 p-8 backdrop-blur">
-                        <h2 className="text-xl font-bold text-white">Course Leaderboard</h2>
-                        <p className="mt-1 text-sm text-slate-400">
-                            Live token rankings for <span className="font-semibold text-cyan-300">{teacher.course}</span> — pulled directly from the blockchain.
-                        </p>
+                        <div className="flex items-start justify-between">
+                            <div>
+                                <h2 className="text-xl font-bold text-white">Course Leaderboard</h2>
+                                <p className="mt-1 text-sm text-slate-400">
+                                    Live token rankings for <span className="font-semibold text-cyan-300">{teacher.course}</span> — pulled directly from the blockchain.
+                                </p>
+                            </div>
+                            <button onClick={() => setLeaderboard([])}
+                                className="rounded-lg border border-cyan-400/10 bg-white/5 px-3 py-2 text-xs text-cyan-300 hover:bg-white/10 transition">
+                                ↻ Refresh
+                            </button>
+                        </div>
 
                         {leaderboardLoading ? (
                             <div className="mt-8 text-center text-sm text-slate-500">Loading leaderboard...</div>

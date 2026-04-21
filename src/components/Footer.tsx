@@ -1,6 +1,3 @@
-// simple footer shown at the bottom of the main site pages
-// not shown on the teacher portal or any full-screen views
-
 export default function Footer() {
   return (
     <footer className="mt-12 border-t border-cyan-400/10 bg-[#070d1a]/70">
